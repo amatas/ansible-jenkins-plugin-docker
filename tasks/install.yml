@@ -1,0 +1,116 @@
+---
+
+
+- name: Install required packages
+  yum:
+    name: "{{ item }}"
+    state: latest
+  with_items: jenkins_docker_packages
+
+- name: Add Jenkins to docker group
+  user:
+    name: jenkins
+    groups: docker
+    append: yes
+  notify:
+    - restart jenkins
+
+- name: Get list of currently installed plugins
+  shell: "java -jar {{ jenkins_cli_jar }} -s http://localhost:{{ jenkins_port }}/ list-plugins | awk '{ print $1 }'"
+  register: plugin_list
+
+- name: Install additional plugins and update everything
+  get_url:
+    dest: "{{ jenkins_home }}/plugins/{{ item }}.jpi"
+    url: "{{ jenkins_updates_url }}/latest/{{ item }}.hpi"
+    force: yes
+    owner: "{{ jenkins_user }}"
+  when: not plugin_list.stderr
+  with_items:
+    - "{{ plugin_list.stdout_lines }}"
+    - "{{ jenkins_docker_plugins }}"
+  notify:
+    - restart jenkins
+
+- name: Pin all plugins to avoid bundled versions getting reinstalled
+  file:
+    path: "{{ jenkins_home }}/plugins/{{ item }}.jpi.pinned"
+    state: touch
+    owner: "{{ jenkins_user }}"
+  when: not plugin_list.stderr
+  with_items:
+    - "{{ plugin_list.stdout_lines }}"
+    - "{{ jenkins_docker_plugins }}"
+  notify:
+    - restart jenkins
+
+- name: Get list of currently installed plugins with credentials
+  shell: "java -jar {{ jenkins_cli_jar }} -s http://localhost:{{ jenkins_port }}/ list-plugins {{ jenkins_admin_credentials }} | awk '{ print $1 }'"
+  register: plugin_list_credentials
+  when: plugin_list.stderr
+
+- name: Install additional plugins and update everything
+  get_url:
+    dest: "{{ jenkins_home }}/plugins/{{ item }}.jpi"
+    url: "{{ jenkins_updates_url }}/latest/{{ item }}.hpi"
+    force: yes
+    owner: "{{ jenkins_user }}"
+  when: plugin_list_credentials.stdout_lines is defined
+  with_items:
+    - "{{ plugin_list_credentials.stdout_lines }}"
+    - "{{ jenkins_docker_plugins }}"
+  notify:
+    - restart jenkins
+
+- name: Pin all plugins to avoid bundled versions getting reinstalled
+  file:
+    path: "{{ jenkins_home }}/plugins/{{ item }}.jpi.pinned"
+    state: touch
+    owner: "{{ jenkins_user }}"
+  when: plugin_list_credentials.stdout_lines is defined
+  with_items:
+    - "{{ plugin_list_credentials.stdout_lines }}"
+    - "{{ jenkins_docker_plugins }}"
+  notify:
+    - restart jenkins
+ 
+- name: Check if DockerBuilder xml config file exists
+  stat:
+    path: /var/lib/jenkins/org.jenkinsci.plugins.dockerbuildstep.DockerBuilder.xml
+  register: dockerbuilder_file
+
+- name: Transfer DockerBuilder xml config file
+  copy:
+    src: dockerbuilder.xml
+    dest: /var/lib/jenkins/org.jenkinsci.plugins.dockerbuildstep.DockerBuilder.xml
+    owner: jenkins
+
+- name: Configure docker plugin
+  xml:
+    file: /var/lib/jenkins/org.jenkinsci.plugins.dockerbuildstep.DockerBuilder.xml
+    xpath: /org.jenkinsci.plugins.dockerbuildstep.DockerBuilder_-DescriptorImpl/dockerUrl
+    value: unix:///var/run/docker.sock
+  notify:
+    - restart jenkins
+
+- name: Restart Jenkins to create plugins config files
+  service:
+    name: jenkins
+    state: stopped
+
+- name: Restart Jenkins to create plugins config files
+  service:
+    name: jenkins
+    state: started
+ 
+- name: Wait for Jenkins to be ready
+  shell: curl -D - --silent http://localhost:8080/cli/
+  register: result
+  until: >
+    ((result.stdout.find("200 OK") != -1) or
+    (result.stdout.find("Authentication required") != -1)) and
+    (result.stdout.find("Please wait while") == -1)
+  retries: "{{ jenkins_conn_retries }}"
+  delay: "{{ jenkins_conn_delay }}"
+  changed_when: false
+ 
