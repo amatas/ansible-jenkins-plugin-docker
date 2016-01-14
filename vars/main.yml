@@ -10,7 +10,6 @@
 
 jenkins_docker_packages:
   - docker-engine
-  - vim
 
 jenkins_docker_plugins:
   - docker-commons
